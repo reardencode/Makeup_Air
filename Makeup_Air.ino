@@ -45,7 +45,7 @@ void sim_sdp(double *sdp, double *sdp_temp) {
 //                sim_vortex_cfm(fan_adc_read()), sim_hood_cfm[sim_hood], sim_exfiltration_cfm(*sdp));
   // Use a fresh fan voltage every simulation
   double cfm_change = sim_vortex_cfm(fan_adc_read()) + sim_hood_cfm[sim_hood] + sim_exfiltration_cfm(*sdp);
-  double pa_change_per_minute = (SIM_HOUSE_VOLUME + cfm_change) * (ATM_PA + *sdp) / SIM_HOUSE_VOLUME - ATM_PA;
+  double pa_change_per_minute = (ATM_PA + *sdp) * (cfm_change / SIM_HOUSE_VOLUME);
   *sdp = *sdp + (pa_change_per_minute / (60 * 1000)) * (now - last_sim_millis);
   last_sim_millis = now;
 //  Serial.printf("Simulation CFM Change: %f, Sim Pa Change: %f\n", cfm_change, pa_change_per_minute);
