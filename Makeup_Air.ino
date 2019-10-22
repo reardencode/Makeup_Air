@@ -34,8 +34,8 @@ double sim_vortex_cfm(double sim_fan_volts) {
   return sim_fan_volts * 100;
 }
 
-double sim_exfiltration_cfm(double sdp) {
-  return - copysign(0.01 * pow(abs(sdp), 1.46) * SIM_HOUSE_VOLUME / 60, sdp);
+double sim_exfiltration_cfm(double sim_sdp) {
+  return -0.86 * copysign(exp(.03 * abs(sim_sdp)), sim_sdp) * SIM_HOUSE_VOLUME / 60;
 }
 
 void sim_sdp(double *sdp, double *sdp_temp) {
