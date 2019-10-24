@@ -53,18 +53,18 @@ double fan_volts = 0;
 double sdp = 0;
 double sdp_temp = 0;
 
-// Target +2 Pascal indoor pressure
-// This will determine how often the fan runs to bring in fresh air
-#define PID_SETPOINT 0.2
-#define PID_MIN -DBL_MIN
-#define PID_MAX 255
-#define PID_ERR_MIN -PID_MAX
-#define PID_ERR_MAX PID_MAX * 2
-#define PID_KP 3.4
-#define PID_KI 1.5
-#define PID_KD 1.0
+#define PID_SETPOINT 0.2 // This determines how often the fan runs to bring in fresh air (range ~0-5)
+#define PID_MIN -DBL_MIN // Negative value drops the output to significantly <2V to ensure fan off
+#define PID_MAX 255 // 8-pit PWM
+#define PID_ERR_MIN -PID_MAX // Allow sufficient negative windup to provide occasional pulses of fresh air
+#define PID_ERR_MAX PID_MAX // Prevent excessive windup past the control range
+// Tuning values tuned with simulation. See sim.{h,cpp} for more simulation details.
+// Takes about 1 minute to get within 1Pa of target, before oscillating in that range.
+#define PID_KP 2.5
+#define PID_KI 0.2
+#define PID_KD 0.3
 double pid_out = PID_MIN;
-PID fan_pid(PID_KP, PID_KI, PID_KD, &pid_out, PID_SETPOINT, PID_MIN, PID_MAX);
+PID fan_pid(PID_KP, PID_KI, PID_KD, &pid_out, PID_SETPOINT, PID_MIN, PID_MAX, PID_ERR_MIN, PID_ERR_MAX);
 
 void setup() {
   Serial.begin(500000);
