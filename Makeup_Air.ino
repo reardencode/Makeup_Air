@@ -1,66 +1,18 @@
+#include <cfloat>
+
+#include <WiFi.h>
+#include <AsyncUDP.h>
+
 #include "secrets.h"
 #include "OTA.h"
 #include "fan_adc.h"
 #include "sdp.h"
 #include "PID.h"
 
-#include <WiFi.h>
-#include <AsyncUDP.h>
-#include <cfloat>
-
 #define SIMULATABLE 1
 #ifdef SIMULATABLE
-
-#include <cmath>
-
-#define SIM_HOUSE_VOLUME 40000
-#define ATM_PA 101325
-
-const int sim_hood_cfm[] = {0, -50, -100, -200, -300, -450, -650, -850};
-bool simulate = false;
-unsigned long last_sim_millis;
-bool sim_fan_on;
-int sim_hood;
-
-double sim_vortex_cfm(double sim_fan_volts) {
-  if (sim_fan_on && sim_fan_volts <= 2) {
-    sim_fan_on = false;
-  } else if (!sim_fan_on && sim_fan_volts >= 2.5) {
-    sim_fan_on = true;
-  }
-  if (!sim_fan_on) {
-    return 0;
-  }
-  return sim_fan_volts * 100;
-}
-
-double sim_exfiltration_cfm(double sim_sdp) {
-  return -0.86 * copysign(exp(.03 * abs(sim_sdp)), sim_sdp) * SIM_HOUSE_VOLUME / 60;
-}
-
-void sim_sdp(double *sdp, double *sdp_temp) {
-  unsigned long now = millis();
-  *sdp_temp = 25; // 25C is standard simulation temp, right?!
-//  Serial.printf("Simulation Vortex CFM: %f, Hood CFM: %f, Exfiltration CFM: %f\n",
-//                sim_vortex_cfm(fan_adc_read()), sim_hood_cfm[sim_hood], sim_exfiltration_cfm(*sdp));
-  // Use a fresh fan voltage every simulation
-  double cfm_change = sim_vortex_cfm(fan_adc_read()) + sim_hood_cfm[sim_hood] + sim_exfiltration_cfm(*sdp);
-  double pa_change_per_minute = (ATM_PA + *sdp) * (cfm_change / SIM_HOUSE_VOLUME);
-  *sdp = *sdp + (pa_change_per_minute / (60 * 1000)) * (now - last_sim_millis);
-  last_sim_millis = now;
-//  Serial.printf("Simulation CFM Change: %f, Sim Pa Change: %f\n", cfm_change, pa_change_per_minute);
-//  delay(1000);
-}
-
-void sim_toggle() {
-  simulate = !simulate;
-  if (simulate) {
-    last_sim_millis = millis();
-    sim_hood = 0;
-    sim_fan_on = false;
-  }
-}
-
+#include "sim.h"
+Simulator sim;
 #endif
 
 #define LOOP_TICKS (100 / portTICK_PERIOD_MS) // .1 second
@@ -103,14 +55,14 @@ double sdp_temp = 0;
 
 // Target +2 Pascal indoor pressure
 // This will determine how often the fan runs to bring in fresh air
-#define PID_SETPOINT 2
+#define PID_SETPOINT 0.2
 #define PID_MIN -DBL_MIN
 #define PID_MAX 255
 #define PID_ERR_MIN -PID_MAX
 #define PID_ERR_MAX PID_MAX * 2
-#define PID_KP 1
-#define PID_KI 0.1
-#define PID_KD 0.1
+#define PID_KP 3.4
+#define PID_KI 1.5
+#define PID_KD 1.0
 double pid_out = PID_MIN;
 PID fan_pid(PID_KP, PID_KI, PID_KD, &pid_out, PID_SETPOINT, PID_MIN, PID_MAX);
 
@@ -220,11 +172,23 @@ void udp_ui(AsyncUDPPacket packet) {
     packet.print(debug_buf);
 #ifdef SIMULATABLE
   } else if (packet.length() >= 8 && strncmp("simulate", udp_data, 8) == 0) {
-    sim_toggle();
-    packet.printf("Simulation: %d\n", simulate);
+    sim.toggle();
+    packet.printf("Simulation: %d\n", sim.is_active());
   } else if (packet.length() > 5 && strncmp("hood:", udp_data, 5) == 0) {
-    sim_hood = atoi(udp_data + 5);
-    packet.printf("Simulating hood to %d\n", sim_hood);
+    int hood_cfm = sim.set_hood(atoi(udp_data + 5));
+    packet.printf("Simulating hood to %dCFM\n", hood_cfm);
+  } else if (packet.length() > 10 && strncmp("sdp_delay:", udp_data, 10) == 0) {
+    uint8_t sdp_delay = atoi(udp_data + 10);
+    sim.set_sdp_delay(sdp_delay);
+    packet.printf("Set sdp delay %d loops\n", sdp_delay);
+  } else if (packet.length() > 10 && strncmp("fan_delay:", udp_data, 10) == 0) {
+    uint8_t fan_delay = atoi(udp_data + 10);
+    sim.set_fan_delay(fan_delay);
+    packet.printf("Set fan delay %d loops\n", fan_delay);
+  } else if (packet.length() > 11 && strncmp("hood_delay:", udp_data, 11) == 0) {
+    uint8_t hood_delay = atoi(udp_data + 11);
+    sim.set_hood_delay(hood_delay);
+    packet.printf("Set hood delay %d loops\n", hood_delay);
 #endif
   } else {
     packet.printf("No matching command of length %d\n", packet.length());
@@ -274,9 +238,9 @@ void debug_task_fn(void *parameters) {
     if (xSemaphoreTake(lock, LOCK_TICKS)) {
       fan_volts = fan_adc_read();
       snprintf(debug_buf, MAX_DEBUG_LEN,
-               "Target: %4.2fPa, SDP: %7.2fPa, %4.1fC, PID: %3.1f,%3.1f,%3.1f -> %5.1f, Fan(%d): %5.2fV, Heat(%d)\n",
+               "Target: %.2fPa, SDP: %7.2fPa, %.1fC, PID: %.1f,%.1f|%.1f,%.1f -> %.1f, Fan(%d): %5.2fV, Heat(%d)\n",
                fan_pid.get_setpoint(), sdp, sdp_temp,
-               fan_pid.get_kp(), fan_pid.get_ki(), fan_pid.get_kd(),
+               fan_pid.get_kp(), fan_pid.get_ki(), fan_pid.get_error_sum(), fan_pid.get_kd(),
                pid_out, fan_on, fan_volts, heat_on);
       Serial.print(debug_buf);
       xSemaphoreGive(lock);
@@ -291,8 +255,8 @@ void debug_task_fn(void *parameters) {
 void loop() {
   if (xSemaphoreTake(lock, LOCK_TICKS)) {
 #ifdef SIMULATABLE
-    if (simulate) {
-      sim_sdp(&sdp, &sdp_temp);
+    if (sim.is_active()) {
+      sim.sdp_read(&sdp, &sdp_temp);
     } else
 #endif
     sdp_read(&sdp, &sdp_temp);

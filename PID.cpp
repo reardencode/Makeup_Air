@@ -82,6 +82,9 @@ void PID::set_tunings(double kp, double ki, double kd) {
 void PID::set_tunings(double kpe, double kpm, double ki, double kd) {
   _kpe = kpe;
   _kpm = kpm;
+  if (ki == 0) {
+    _error_sum = 0;
+  }
   _ki = ki;
   _kd = kd;
 }

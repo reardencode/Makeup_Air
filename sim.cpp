@@ -1,0 +1,172 @@
+#include <cmath>
+
+#include <Arduino.h>
+
+#include "sim.h"
+#include "sdp.h"
+#include "fan_adc.h"
+
+#define FAN_BOOST_DELAY 10
+#define DEFAULT_FAN_DELAY 20 // must be > FAN_BOOST_DELAY
+#define DEFAULT_HOOD_DELAY 15
+#define DEFAULT_SDP_DELAY 5 // Large values result in very bad behavior it seems
+
+#define SIM_HOUSE_VOLUME 40000
+#define ATM_PA 101325
+#define VORTEX_MIN_CFM 45
+#define VORTEX_MAX_CFM 1032
+#define VORTEX_CFM_RANGE (VORTEX_MAX_CFM - VORTEX_MIN_CFM)
+#define FAN_ON_VOLTS 2.5
+#define FAN_OFF_VOLTS 2
+#define FAN_MAX_VOLTS 10
+#define FAN_VOLTS_RANGE (FAN_MAX_VOLTS - FAN_ON_VOLTS)
+
+const int typhoon_cfm_table[] = {0, -50, -150, -300, -450, -650, -850};
+
+void fill_cfm(int cfm[], uint8_t* cfm_i, int delay, int phase1_delay, int start, int mid, int end) {
+  for (int i = 1; i < phase1_delay; i++) {
+    cfm[(*cfm_i + i) % delay] = start + (mid - start) * i / phase1_delay;
+  }
+  for (int i = phase1_delay; i <= delay; i++) {
+    cfm[(*cfm_i + i) % delay] = mid + (end - mid) * (i - phase1_delay) / (delay - phase1_delay);
+  }
+}
+
+void fill_cfm(int cfm[], uint8_t* cfm_i, int delay, int start, int end) {
+  fill_cfm(cfm, cfm_i, delay, 1, -1, start, end);
+}
+
+int Simulator::typhoon_cfm() {
+  hood_cfm_i = (hood_cfm_i + 1) % hood_delay;
+  int delayed_hood_cfm = hood_cfm[hood_cfm_i];
+  hood_cfm[hood_cfm_i] = typhoon_cfm_table[hood];
+  return delayed_hood_cfm;
+}
+
+int calc_vortex_cfm(double fan_volts) {
+  if (fan_volts > FAN_OFF_VOLTS && fan_volts < FAN_ON_VOLTS) {
+    return VORTEX_MIN_CFM;
+  }
+  fan_volts = min(fan_volts, 10.0); // Controller stops at 10
+  return VORTEX_MIN_CFM + (fan_volts - FAN_ON_VOLTS) * VORTEX_CFM_RANGE / FAN_VOLTS_RANGE;
+}
+
+int Simulator::vortex_cfm() {
+  double fan_volts = fan_adc_read();
+  fan_cfm_i = (fan_cfm_i + 1) % fan_delay;
+  int delayed_fan_cfm = fan_cfm[fan_cfm_i];
+
+  if (fan_on && fan_volts <= FAN_OFF_VOLTS) {
+    fan_on = false;
+    fill_cfm(fan_cfm, &fan_cfm_i, fan_delay, delayed_fan_cfm, 0);
+  } else if (!fan_on && fan_volts >= FAN_ON_VOLTS) {
+    fan_on = true;
+    fill_cfm(fan_cfm, &fan_cfm_i,
+             fan_delay, FAN_BOOST_DELAY, delayed_fan_cfm, VORTEX_MAX_CFM / 2, calc_vortex_cfm(fan_volts));
+  } else if (fan_on) {
+    fan_cfm[fan_cfm_i] = calc_vortex_cfm(fan_volts);
+  } else {
+    fan_cfm[fan_cfm_i] = 0;
+  }
+
+  return delayed_fan_cfm;
+}
+
+double exfiltration_cfm(double sdp) {
+  // Tried to estimate using an exponential model for exfiltration vs.
+  // pressure, but online calculators and papers tell me that it's a square
+  // root relationship between pressure and volume flow rate for a given
+  // equivalent leakage area
+  // But the sqrt seems like it might only be correct with a single large hole?
+  //return -282.843 * copysign(sqrt(abs(sdp)), sdp);
+  return -0.268 * copysign(exp(.05 * abs(sdp)) - 1, sdp) * SIM_HOUSE_VOLUME / 60;
+  //return -0.86 * copysign(exp(.03 * abs(sdp)) - 1, sdp) * SIM_HOUSE_VOLUME / 60;
+}
+
+void Simulator::sdp_read(double *sdp_out, double *sdp_temp_out) {
+  unsigned long now = millis();
+  *sdp_temp_out = 25; // 25C is standard simulation temp, right?!
+
+  int recent_sdp = sdp[sdp_i];
+  sdp_i = (sdp_i + 1) % sdp_delay;
+  *sdp_out = sdp[sdp_i] / SDP_SCALE;
+
+  double cfm_change = vortex_cfm() + typhoon_cfm() + exfiltration_cfm(*sdp_out);
+  double pa_change_per_minute = (ATM_PA + *sdp_out) * (cfm_change / SIM_HOUSE_VOLUME);
+  int new_sdp = recent_sdp + round((pa_change_per_minute * SDP_SCALE / (60 * 1000)) * (now - last_millis));
+  sdp[sdp_i] = max(INT16_MIN, min(INT16_MAX, new_sdp));
+  last_millis = now;
+}
+
+void set_delay(int** cfm, uint8_t* cfm_i, uint8_t *delay, uint8_t new_delay) {
+  int cur_cfm = (*cfm)[*cfm_i];
+  int final_cfm = (*cfm)[(*cfm_i + *delay) % *delay];
+  int* new_cfm = (int*)calloc(new_delay, sizeof(int));
+  if (new_cfm == NULL) return;
+  *cfm_i = 0;
+  fill_cfm(new_cfm, cfm_i, new_delay, cur_cfm, final_cfm);
+  *delay = new_delay;
+  *cfm = new_cfm;
+}
+
+void Simulator::set_sdp_delay(uint8_t delay) {
+  set_delay(&sdp, &sdp_i, &sdp_delay, delay);
+}
+
+void Simulator::set_fan_delay(uint8_t delay) {
+  set_delay(&fan_cfm, &fan_cfm_i, &fan_delay, delay);
+}
+
+void Simulator::set_hood_delay(uint8_t delay) {
+  set_delay(&hood_cfm, &hood_cfm_i, &hood_delay, delay);
+}
+
+void Simulator::toggle() {
+  if (!active) {
+    if (NULL == (hood_cfm = (int*)calloc(hood_delay, sizeof(int)))) goto cleanup;
+    if (NULL == (fan_cfm = (int*)calloc(fan_delay, sizeof(int)))) goto cleanup;
+    if (NULL == (sdp = (int*)calloc(sdp_delay, sizeof(int)))) goto cleanup;
+    last_millis = millis();
+    hood = 0;
+    fan_on = false;
+    active = true;
+    return;
+  }
+cleanup:
+  active = false;
+  free(sdp);
+  sdp = NULL;
+  free(hood_cfm);
+  hood_cfm = NULL;
+  free(fan_cfm);
+  fan_cfm = NULL;
+}
+
+bool Simulator::is_active() {
+  return active;
+}
+
+int Simulator::set_hood(uint8_t val) {
+  if (val <= 6 && val != hood) {
+    int cur_cfm = hood_cfm[hood_cfm_i];
+    int new_cfm = typhoon_cfm_table[val];
+    int cfm_change = new_cfm - cur_cfm;
+    fill_cfm(hood_cfm, &hood_cfm_i, hood_delay, cur_cfm, new_cfm);
+    hood = val;
+  }
+  return typhoon_cfm_table[hood];
+}
+
+int Simulator::get_hood_cfm() {
+  return hood_cfm[hood_cfm_i];
+}
+
+int Simulator::get_fan_cfm() {
+  return fan_cfm[fan_cfm_i];
+}
+
+Simulator::Simulator() {
+  fan_delay = DEFAULT_FAN_DELAY;
+  hood_delay = DEFAULT_HOOD_DELAY;
+  sdp_delay = DEFAULT_SDP_DELAY;
+}
