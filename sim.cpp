@@ -7,17 +7,17 @@
 #include "fan_adc.h"
 
 #define FAN_BOOST_DELAY 10
-#define DEFAULT_FAN_DELAY 20 // must be > FAN_BOOST_DELAY
-#define DEFAULT_HOOD_DELAY 15
-#define DEFAULT_SDP_DELAY 20
+#define DEFAULT_FAN_DELAY (FAN_BOOST_DELAY + 10)
+#define DEFAULT_HOOD_DELAY 25
+#define DEFAULT_SDP_DELAY 50
 
 #define SIM_HOUSE_VOLUME 40000
 #define ATM_PA 101325
-#define VORTEX_MIN_CFM 45
+#define VORTEX_MIN_CFM 30
 #define VORTEX_MAX_CFM 1032
 #define VORTEX_CFM_RANGE (VORTEX_MAX_CFM - VORTEX_MIN_CFM)
-#define FAN_ON_VOLTS 2.5
-#define FAN_OFF_VOLTS 2
+#define FAN_ON_VOLTS 2.55 // Based on real world testing
+#define FAN_OFF_VOLTS 2.05 // Based on real world testing
 #define FAN_MAX_VOLTS 10
 #define FAN_VOLTS_RANGE (FAN_MAX_VOLTS - FAN_ON_VOLTS)
 
