@@ -14,6 +14,7 @@
 #define SIM_HOUSE_VOLUME 40000
 #define ATM_PA 101325
 #define VORTEX_MIN_CFM 30
+#define FAN_BOOST_CFM 150
 #define VORTEX_MAX_CFM 1032
 #define VORTEX_CFM_RANGE (VORTEX_MAX_CFM - VORTEX_MIN_CFM)
 #define FAN_ON_VOLTS 2.55 // Based on real world testing
@@ -62,7 +63,7 @@ int Simulator::vortex_cfm() {
   } else if (!fan_on && fan_volts >= FAN_ON_VOLTS) {
     fan_on = true;
     fill_arr(fan_cfm, &fan_cfm_i,
-             fan_delay, FAN_BOOST_DELAY, delayed_fan_cfm, VORTEX_MAX_CFM / 2, calc_vortex_cfm(fan_volts));
+             fan_delay, FAN_BOOST_DELAY, delayed_fan_cfm, FAN_BOOST_CFM, calc_vortex_cfm(fan_volts));
   } else if (fan_on) {
     fan_cfm[fan_cfm_i] = calc_vortex_cfm(fan_volts);
   } else {
