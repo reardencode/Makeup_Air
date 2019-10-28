@@ -21,6 +21,7 @@
 #define FAN_OFF_VOLTS 2.05 // Based on real world testing
 #define FAN_MAX_VOLTS 10
 #define FAN_VOLTS_RANGE (FAN_MAX_VOLTS - FAN_ON_VOLTS)
+#define SIM_SDP_SCALE 240.0
 
 const int typhoon_cfm_table[] = {0, -50, -150, -300, -450, -650, -850};
 
@@ -90,11 +91,11 @@ void Simulator::sdp_read(double *sdp_out, double *sdp_temp_out) {
 
   int recent_sdp = sdp[sdp_i];
   sdp_i = (sdp_i + 1) % sdp_delay;
-  *sdp_out = sdp[sdp_i] / SDP_SCALE;
+  *sdp_out = sdp[sdp_i] / SIM_SDP_SCALE;
 
-  double cfm_change = vortex_cfm() + typhoon_cfm() + exfiltration_cfm(recent_sdp / SDP_SCALE);
-  double pa_change_per_minute = (ATM_PA + recent_sdp / SDP_SCALE) * (cfm_change / SIM_HOUSE_VOLUME);
-  int new_sdp = recent_sdp + round((pa_change_per_minute * SDP_SCALE / (60 * 1000)) * (now - last_millis));
+  double cfm_change = vortex_cfm() + typhoon_cfm() + exfiltration_cfm(recent_sdp / SIM_SDP_SCALE);
+  double pa_change_per_minute = (ATM_PA + recent_sdp / SIM_SDP_SCALE) * (cfm_change / SIM_HOUSE_VOLUME);
+  int new_sdp = recent_sdp + round((pa_change_per_minute * SIM_SDP_SCALE / (60 * 1000)) * (now - last_millis));
   sdp[sdp_i] = max(INT16_MIN, min(INT16_MAX, new_sdp));
   last_millis = now;
 }

@@ -31,9 +31,13 @@ char debug_buf[MAX_DEBUG_LEN];
 char udp_data[MAX_UDP_DATA];
 AsyncUDP udp;
 
-#define HEAT_ON_FAN_THRESHOLD 64 // ~25% fan speed, not too much unheated air for furnace
-// This needs adjusting depending on temp source, and calibration currently saying that
-// if it's below 15C at the differential pressure sensor, activate inbound air heating
+// These thresholds should turn the heat on before too much unheated air would
+// potentially reduce the furnace intake air temp below design minimum (55f),
+// and turn the heat off before the fan could possibly go off.
+#define HEAT_ON_FAN_THRESHOLD 64 // ~25% voltage, ~20% airflow?, ~200CFM?
+#define HEAT_OFF_FAN_THRESHOLD 16 // ~12.5% voltage, min airflow, ~30CFM?
+// This needs adjusting depending on temp source, and calibration.
+// If below 15C at differential pressure sensor, activate inbound air heating
 #define HEAT_ON_TEMP_THRESHOLD 15
 int heat_override = -1;
 bool heat_on = false;
@@ -50,6 +54,7 @@ int fan_override = -2;
 bool fan_on = false;
 double fan_volts = 0;
 
+SDP sdp810(SDP8X0_I2C_ADDRESS, Wire);
 double sdp = 0;
 double sdp_temp = 0;
 
@@ -66,17 +71,33 @@ double sdp_temp = 0;
 double pid_out = PID_MIN;
 PID fan_pid(PID_KP, PID_KI, PID_KD, &pid_out, PID_SETPOINT, PID_MIN, PID_MAX, PID_ERR_MIN, PID_ERR_MAX);
 
+void ota_only_loop() {
+  for (;;) {
+    ota_loop(); // Do the OTA loop for potential recovery
+    delay(1000);
+  }
+}
+
 void setup() {
   Serial.begin(500000);
   while (!Serial); // Wait for Serial port to connect
-
-  Serial.println("Initializing SDP..."); // Do this before WiFi to give it warmup time (20ms min)
-  sdp_setup();
 
   Serial.println("Initializing WiFi...");
   WiFi.disconnect();
   WiFi.onEvent(wifi_event_handler);
   WiFi.begin(WIFI_SSID, WPA2_PSK);
+
+  Serial.println("Initializing OTA..."); // Do this early to give some chance of recovery
+  ota_setup();
+
+  Serial.println("Initializing I2C...");
+  Wire.begin(-1, -1, 400000L); // Default pins, 400kHz
+
+  Serial.println("Initializing SDP...");
+  if (!sdp810.begin_pdiff(true)) {
+    Serial.println("Failed to send begin averaged differential pressure reading command");
+    ota_only_loop();
+  }
 
   Serial.println("Initializing UDP...");
   if (udp.listen(UDP_PORT)) {
@@ -95,9 +116,6 @@ void setup() {
   Serial.println("Initializing fan ADC...");
   fan_adc_setup(FAN_IN);
 
-  Serial.println("Initializing OTA...");
-  ota_setup();
-
   Serial.println("Initializing task timer...");
   last_loop_time = xTaskGetTickCount();
 
@@ -107,10 +125,7 @@ void setup() {
   Serial.println("Initializing debug format task...");
   if (lock == NULL) {
     Serial.println("Failed to create mutex");
-    for (;;) {
-      ota_loop(); // Do the OTA loop for potential recovery
-      delay(1000);
-    }
+    ota_only_loop();
   }
   xTaskCreate(debug_task_fn, "DebugTask", 10000, NULL, 1, NULL);
 
@@ -118,22 +133,17 @@ void setup() {
 }
 
 void udp_ui(AsyncUDPPacket packet) {
-  Serial.print("UDP Packet From: ");
-  Serial.print(packet.remoteIP());
-  Serial.print(":");
-  Serial.print(packet.remotePort());
-  Serial.print(", Length: ");
-  Serial.print(packet.length());
+  Serial.printf("UDP Packet From: %s:%d, Length: %d\n",
+                packet.remoteIP().toString(), packet.remotePort(), packet.length());
 
   if (packet.length() + 1 > MAX_UDP_DATA) {
     packet.println("Data too big");
-    Serial.println(", Data too big");
+    Serial.println("Data too big");
     return;
   }
   memcpy(udp_data, packet.data(), packet.length());
   udp_data[packet.length()] = 0;
-  Serial.print(", Data: ");
-  Serial.println(udp_data);
+  Serial.printf("Data: %s\n", udp_data);
   if (!xSemaphoreTake(lock, LOCK_TICKS)) {
     Serial.println("UDP UI failed to get lock!?");
     return;
@@ -205,7 +215,7 @@ void set_heat() {
   if (pid_out >= HEAT_ON_FAN_THRESHOLD && fan_on && heat_on && !digitalRead(HEAT_SW)) {
     Serial.println("Activating heater");
     digitalWrite(HEAT_SW, HIGH);
-  } else if (!fan_on && digitalRead(HEAT_SW)) {
+  } else if (pid_out <= HEAT_OFF_FAN_THRESHOLD && digitalRead(HEAT_SW)) {
     Serial.println("Deactivating heater");
     digitalWrite(HEAT_SW, LOW);
   }
@@ -259,7 +269,9 @@ void loop() {
       sim.sdp_read(&sdp, &sdp_temp);
     } else
 #endif
-    sdp_read(&sdp, &sdp_temp);
+    if (!sdp810.read(&sdp, &sdp_temp)) {
+      Serial.println(sdp810.get_last_error());
+    }
     set_fan();
     set_heat();
     xSemaphoreGive(lock);
@@ -274,8 +286,7 @@ void loop() {
 void wifi_event_handler(system_event_id_t event) {
   switch (event) {
     case SYSTEM_EVENT_STA_GOT_IP:
-      Serial.print("WiFi connected! IP address: ");
-      Serial.println(WiFi.localIP());
+      Serial.printf("WiFi connected! IP address: %s\n", WiFi.localIP().toString().c_str());
       break;
     case SYSTEM_EVENT_STA_DISCONNECTED:
       Serial.println("WiFi lost connection");
