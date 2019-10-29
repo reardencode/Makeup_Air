@@ -238,17 +238,18 @@ void set_fan() {
 }
 
 void ota_task_fn(void* parameters) {
-  TickType_t last_ota_time = first_tick;
+  TickType_t last_loop_time = first_tick;
   ota_setup();
   for (;;) {
+    vTaskDelayUntil(&last_loop_time, OTA_TICKS);
     ota_loop();
-    vTaskDelayUntil(&last_ota_time, OTA_TICKS);
   }
 }
 
 void debug_task_fn(void* parameters) {
-  TickType_t last_debug_time = first_tick;
+  TickType_t last_loop_time = first_tick;
   for (;;) {
+    vTaskDelayUntil(&last_loop_time, DEBUG_TICKS);
     Serial.print(WiFi.localIP());
     Serial.print(": ");
     if (xSemaphoreTake(lock, LOCK_TICKS)) {
@@ -263,31 +264,33 @@ void debug_task_fn(void* parameters) {
     } else {
       Serial.println("Debug task failed to get lock!?");
     }
-
-    vTaskDelayUntil(&last_debug_time, DEBUG_TICKS);
   }
 }
 
-// TODO: Move our main to a separate task and make loop idle?
-TickType_t last_loop_time = first_tick;
-void loop() {
+void main_task_fn(void* parameters) {
   TickType_t last_loop_time = first_tick;
-  vTaskDelayUntil(&last_loop_time, LOOP_TICKS); // Start with a delay to give SDP warmup time
-  if (xSemaphoreTake(lock, LOCK_TICKS)) {
+  for (;;) {
+    vTaskDelayUntil(&last_loop_time, LOOP_TICKS);
+    if (xSemaphoreTake(lock, LOCK_TICKS)) {
 #ifdef SIMULATABLE
-    if (sim.is_active()) {
-      sim.sdp_read(&sdp, &sdp_temp);
-    } else
+      if (sim.is_active()) {
+        sim.sdp_read(&sdp, &sdp_temp);
+      } else
 #endif
-    if (!sdp810.read(&sdp, &sdp_temp)) {
-      Serial.println(sdp810.get_last_error());
+      if (!sdp810.read(&sdp, &sdp_temp)) {
+        Serial.println(sdp810.get_last_error());
+      }
+      set_fan();
+      set_heat();
+      xSemaphoreGive(lock);
+    } else {
+      Serial.println("Loop failed to get lock!?");
     }
-    set_fan();
-    set_heat();
-    xSemaphoreGive(lock);
-  } else {
-    Serial.println("Loop failed to get lock!?");
   }
+}
+
+void loop() {
+  vTaskDelete(NULL);
 }
 
 void wifi_event_handler(system_event_id_t event) {
