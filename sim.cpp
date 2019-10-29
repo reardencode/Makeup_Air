@@ -1,6 +1,6 @@
+#include <algorithm>
+#include <cstdint>
 #include <cmath>
-
-#include <Arduino.h>
 
 #include "sim.h"
 #include "sdp.h"
@@ -49,7 +49,7 @@ int calc_vortex_cfm(double fan_volts) {
   if (fan_volts > FAN_OFF_VOLTS && fan_volts < FAN_ON_VOLTS) {
     return VORTEX_MIN_CFM;
   }
-  fan_volts = min(fan_volts, 10.0); // Controller stops at 10
+  fan_volts = fmin(fan_volts, 10.0); // Controller stops at 10
   return VORTEX_MIN_CFM + (fan_volts - FAN_ON_VOLTS) * VORTEX_CFM_RANGE / FAN_VOLTS_RANGE;
 }
 
@@ -89,45 +89,46 @@ void Simulator::sdp_read(double *sdp_out, double *sdp_temp_out) {
   unsigned long now = millis();
   *sdp_temp_out = 25; // 25C is standard simulation temp, right?!
 
-  int recent_sdp = sdp[sdp_i];
-  sdp_i = (sdp_i + 1) % sdp_delay;
-  *sdp_out = sdp[sdp_i] / SIM_SDP_SCALE;
+  int recent_sdp = sdp_pa[sdp_pa_i];
+  sdp_pa_i = (sdp_pa_i + 1) % sdp_delay;
+  *sdp_out = sdp_pa[sdp_pa_i] / SIM_SDP_SCALE;
 
   double cfm_change = vortex_cfm() + typhoon_cfm() + exfiltration_cfm(recent_sdp / SIM_SDP_SCALE);
   double pa_change_per_minute = (ATM_PA + recent_sdp / SIM_SDP_SCALE) * (cfm_change / SIM_HOUSE_VOLUME);
   int new_sdp = recent_sdp + round((pa_change_per_minute * SIM_SDP_SCALE / (60 * 1000)) * (now - last_millis));
-  sdp[sdp_i] = max(INT16_MIN, min(INT16_MAX, new_sdp));
+  sdp_pa[sdp_pa_i] = std::max(INT16_MIN, std::min(INT16_MAX, new_sdp));
   last_millis = now;
 }
 
-void set_delay(int** arr, uint8_t* arr_i, uint8_t *delay, uint8_t new_delay) {
+uint8_t set_delay(int** arr, uint8_t* arr_i, uint8_t *delay, uint8_t new_delay) {
   int cur_arr = (*arr)[*arr_i];
   int final_arr = (*arr)[(*arr_i + *delay) % *delay];
   int* new_arr = (int*)calloc(new_delay, sizeof(int));
-  if (new_arr == NULL) return;
+  if (new_arr == NULL) return *delay;
   *arr_i = 0;
   fill_arr(new_arr, arr_i, new_delay, cur_arr, final_arr);
   *delay = new_delay;
   *arr = new_arr;
+  return *delay;
 }
 
-void Simulator::set_sdp_delay(uint8_t delay) {
-  set_delay(&sdp, &sdp_i, &sdp_delay, delay);
+uint8_t Simulator::set_sdp_delay(uint8_t delay) {
+  return set_delay(&sdp_pa, &sdp_pa_i, &sdp_delay, delay);
 }
 
-void Simulator::set_fan_delay(uint8_t delay) {
-  set_delay(&fan_cfm, &fan_cfm_i, &fan_delay, delay);
+uint8_t Simulator::set_fan_delay(uint8_t delay) {
+  return set_delay(&fan_cfm, &fan_cfm_i, &fan_delay, delay);
 }
 
-void Simulator::set_hood_delay(uint8_t delay) {
-  set_delay(&hood_cfm, &hood_cfm_i, &hood_delay, delay);
+uint8_t Simulator::set_hood_delay(uint8_t delay) {
+  return set_delay(&hood_cfm, &hood_cfm_i, &hood_delay, delay);
 }
 
 void Simulator::toggle() {
   if (!active) {
     if (NULL == (hood_cfm = (int*)calloc(hood_delay, sizeof(int)))) goto cleanup;
     if (NULL == (fan_cfm = (int*)calloc(fan_delay, sizeof(int)))) goto cleanup;
-    if (NULL == (sdp = (int*)calloc(sdp_delay, sizeof(int)))) goto cleanup;
+    if (NULL == (sdp_pa = (int*)calloc(sdp_delay, sizeof(int)))) goto cleanup;
     last_millis = millis();
     hood = 0;
     fan_on = false;
@@ -136,8 +137,8 @@ void Simulator::toggle() {
   }
 cleanup:
   active = false;
-  free(sdp);
-  sdp = NULL;
+  free(sdp_pa);
+  sdp_pa = NULL;
   free(hood_cfm);
   hood_cfm = NULL;
   free(fan_cfm);
@@ -167,8 +168,9 @@ int Simulator::get_fan_cfm() {
   return fan_cfm[fan_cfm_i];
 }
 
-Simulator::Simulator() {
-  fan_delay = DEFAULT_FAN_DELAY;
-  hood_delay = DEFAULT_HOOD_DELAY;
-  sdp_delay = DEFAULT_SDP_DELAY;
-}
+Simulator::Simulator() :
+  fan_delay(DEFAULT_FAN_DELAY), fan_cfm_i(0),
+  hood_delay(DEFAULT_HOOD_DELAY), hood_cfm_i(0),
+  sdp_delay(DEFAULT_SDP_DELAY), sdp_pa_i(0),
+  active(false)
+{}

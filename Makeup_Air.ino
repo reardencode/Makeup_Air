@@ -69,7 +69,7 @@ double sdp_temp = 0;
 // Takes about 1 minute to get within 1Pa of target, before oscillating in that range.
 #define PID_KP 2.5
 #define PID_KI 0.2
-#define PID_KD 0.3
+#define PID_KD 0.4
 double pid_out = PID_MIN;
 PID fan_pid(PID_KP, PID_KI, PID_KD, &pid_out, PID_SETPOINT, PID_MIN, PID_MAX, PID_ERR_MIN, PID_ERR_MAX);
 
@@ -132,6 +132,9 @@ void setup() {
   Serial.println("Initialized.");
 }
 
+#define UDP_UI_WHITESPACE " \f\n\r\t\v"
+#define UDP_UI_COMMAND_SEP ":=" UDP_UI_WHITESPACE
+
 void udp_ui(AsyncUDPPacket packet) {
   Serial.printf("UDP Packet From: %s:%d, Length: %d\n",
                 packet.remoteIP().toString(), packet.remotePort(), packet.length());
@@ -143,23 +146,30 @@ void udp_ui(AsyncUDPPacket packet) {
   }
   memcpy(udp_data, packet.data(), packet.length());
   udp_data[packet.length()] = 0;
-  Serial.printf("Data: %s\n", udp_data);
+
+  char* command = &udp_data[strspn(udp_data, UDP_UI_WHITESPACE)];
+  char* command_end = &command[strcspn(command, UDP_UI_COMMAND_SEP)];
+  char *value_str = &command_end[strspn(command_end, UDP_UI_COMMAND_SEP)];
+  *command_end = 0;
+  value_str[strcspn(value_str, UDP_UI_WHITESPACE)] = 0;
+  double value = atof(value_str);
+  Serial.printf("UDP Command: %s, Value: %f\n", command, value);
+
   if (!xSemaphoreTake(lock, LOCK_TICKS)) {
     Serial.println("UDP UI failed to get lock!?");
     return;
   }
-  if (packet.length() > 4 && strncmp("fan:", udp_data, 4) == 0) {
-    fan_override = atoi(udp_data + 4);
+  if (strcmp("fan", command) == 0) {
+    fan_override = value;
     if (fan_override >= -1) {
       fan_pid.manual();
     }
     packet.printf("Overriding fan to %d\n", fan_override);
-  } else if (packet.length() > 5 && strncmp("heat:", udp_data, 5) == 0) {
-    heat_override = atoi(udp_data + 5);
+  } else if (strcmp("heat", command) == 0) {
+    heat_override = value;
     packet.printf("Overriding heat to %d\n", heat_override);
-  } else if (packet.length() > 5 && strncmp("pid", udp_data, 3) == 0)  {
-    double value = atof(udp_data + 5);
-    switch (udp_data[3]) {
+  } else if (strncmp("pid", command, 3) == 0)  {
+    switch (command[3]) {
       case 'p':
         fan_pid.set_tunings(value, fan_pid.get_ki(), fan_pid.get_kd());
         packet.printf("Set PID proportional constant to %f\n", value);
@@ -173,32 +183,25 @@ void udp_ui(AsyncUDPPacket packet) {
         packet.printf("Set PID derivative constant to %f\n", value);
         break;
       default:
-        packet.printf("Invalid PID parameter: %c\n", udp_data[3]);
+        packet.printf("Invalid PID parameter: %c\n", command[3]);
     }
-  } else if (packet.length() > 7 && strncmp("target:", udp_data, 7) == 0) {
-    fan_pid.set_setpoint(atof(udp_data + 7));
+  } else if (strcmp("target", command) == 0) {
+    fan_pid.set_setpoint(value);
     packet.printf("Set target differential pressure to %fPa\n", fan_pid.get_setpoint());
-  } else if (packet.length() >= 6 && strncmp("status", udp_data, 6) == 0) {
+  } else if (strcmp("status", command) == 0) {
     packet.print(debug_buf);
 #ifdef SIMULATABLE
-  } else if (packet.length() >= 8 && strncmp("simulate", udp_data, 8) == 0) {
+  } else if (strcmp("simulate", command) == 0) {
     sim.toggle();
     packet.printf("Simulation: %d\n", sim.is_active());
-  } else if (packet.length() > 5 && strncmp("hood:", udp_data, 5) == 0) {
-    int hood_cfm = sim.set_hood(atoi(udp_data + 5));
-    packet.printf("Simulating hood to %dCFM\n", hood_cfm);
-  } else if (packet.length() > 10 && strncmp("sdp_delay:", udp_data, 10) == 0) {
-    uint8_t sdp_delay = atoi(udp_data + 10);
-    sim.set_sdp_delay(sdp_delay);
-    packet.printf("Set sdp delay %d loops\n", sdp_delay);
-  } else if (packet.length() > 10 && strncmp("fan_delay:", udp_data, 10) == 0) {
-    uint8_t fan_delay = atoi(udp_data + 10);
-    sim.set_fan_delay(fan_delay);
-    packet.printf("Set fan delay %d loops\n", fan_delay);
-  } else if (packet.length() > 11 && strncmp("hood_delay:", udp_data, 11) == 0) {
-    uint8_t hood_delay = atoi(udp_data + 11);
-    sim.set_hood_delay(hood_delay);
-    packet.printf("Set hood delay %d loops\n", hood_delay);
+  } else if (strcmp("hood", command) == 0) {
+    packet.printf("Simulating hood to %dCFM\n", sim.set_hood(value));
+  } else if (strcmp("sdp_delay", command) == 0) {
+    packet.printf("Set sdp delay %d loops\n", sim.set_sdp_delay(value));
+  } else if (strcmp("fan_delay", command) == 0) {
+    packet.printf("Set fan delay %d loops\n", sim.set_fan_delay(value));
+  } else if (strcmp("hood_delay", command) == 0) {
+    packet.printf("Set hood delay %d loops\n", sim.set_hood_delay(value));
 #endif
   } else {
     packet.printf("No matching command of length %d\n", packet.length());
