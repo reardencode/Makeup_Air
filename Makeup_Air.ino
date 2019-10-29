@@ -1,4 +1,5 @@
 #include <cfloat>
+#include <algorithm>
 
 #include <WiFi.h>
 #include <AsyncUDP.h>
@@ -137,7 +138,7 @@ void setup() {
 
 void udp_ui(AsyncUDPPacket packet) {
   Serial.printf("UDP Packet From: %s:%d, Length: %d\n",
-                packet.remoteIP().toString(), packet.remotePort(), packet.length());
+                packet.remoteIP().toString().c_str(), packet.remotePort(), packet.length());
 
   if (packet.length() + 1 > MAX_UDP_DATA) {
     packet.println("Data too big");
@@ -195,13 +196,13 @@ void udp_ui(AsyncUDPPacket packet) {
     sim.toggle();
     packet.printf("Simulation: %d\n", sim.is_active());
   } else if (strcmp("hood", command) == 0) {
-    packet.printf("Simulating hood to %dCFM\n", sim.set_hood(value));
+    packet.printf("Simulating hood to %dCFM\n", sim.set_hood(std::max(0, (int)value)));
   } else if (strcmp("sdp_delay", command) == 0) {
-    packet.printf("Set sdp delay %d loops\n", sim.set_sdp_delay(value));
+    packet.printf("Set sdp delay %d loops\n", sim.set_sdp_delay(std::max(0, (int)value)));
   } else if (strcmp("fan_delay", command) == 0) {
-    packet.printf("Set fan delay %d loops\n", sim.set_fan_delay(value));
+    packet.printf("Set fan delay %d loops\n", sim.set_fan_delay(std::max(0, (int)value)));
   } else if (strcmp("hood_delay", command) == 0) {
-    packet.printf("Set hood delay %d loops\n", sim.set_hood_delay(value));
+    packet.printf("Set hood delay %d loops\n", sim.set_hood_delay(std::max(0, (int)value)));
 #endif
   } else {
     packet.printf("No matching command of length %d\n", packet.length());
