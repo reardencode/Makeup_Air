@@ -20,7 +20,7 @@ bool SDP::_send_command(SensorData command) {
 }
 
 bool SDP::_read_value(SensorData& result, char* field_name) {
-  uint8_t crc = 0xFF;
+  uint8_t crc = SDP_CRC_INIT;
 
   ENDIAN_AWARE_LOOP(i, 0, 2) {
     int rc = _i2c.read();
@@ -32,17 +32,16 @@ bool SDP::_read_value(SensorData& result, char* field_name) {
     crc ^= rc & 0xFF;
     for (uint8_t b = 0; b < 8; b++) {
       if (crc & 0x80)
-        crc = (crc << 1) ^ 0x31;
+        crc = (crc << 1) ^ SDP_CRC_POLY;
       else
         crc <<= 1;
     }
   }
-  if (crc == _i2c.read()) {
-    return true;
-  } else {
+  if (crc != _i2c.read()) {
     snprintf(_last_error, SDP_ERROR_BUF_SIZE, "CRC check failed for %s", field_name);
     return false;
   }
+  return true;
 }
 
 bool SDP::begin_mass_flow(bool averaged) {
@@ -62,15 +61,14 @@ bool SDP::trigger_pdiff(bool averaged) {
 }
 
 bool SDP::read(double *pdiff, double *temp) {
-  uint8_t read_size = 0;
+  uint8_t read_size;
   if (_scale.value == 0) {
     read_size = SDP_VALUE_SIZE * 3;
   } else if (temp != NULL) {
     read_size = SDP_VALUE_SIZE * 2;
   } else if (pdiff != NULL) {
     read_size = SDP_VALUE_SIZE;
-  }
-  if (read_size == 0) {
+  } else {
     return true;
   }
   uint8_t bytes_read = _i2c.requestFrom(_address, read_size);
