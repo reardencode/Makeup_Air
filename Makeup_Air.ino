@@ -86,7 +86,7 @@ void setup() {
   WiFi.begin(WIFI_SSID, WPA2_PSK);
 
   Serial.println("Initializing OTA task..."); // Do this early to give some chance of recovery
-  xTaskCreate(ota_task_fn, "OtaTask", 10000, NULL, 2, NULL);
+  xTaskCreate(ota_task_fn, "OTA", 8192, NULL, 2, NULL);
 
   Serial.println("Initializing I2C...");
   Wire.begin(-1, -1, 400000L); // Default pins, 400kHz
@@ -124,7 +124,10 @@ void setup() {
   }
 
   Serial.println("Initializing debug format task...");
-  xTaskCreate(debug_task_fn, "DebugTask", 10000, NULL, 1, NULL); // Requires lock
+  xTaskCreate(debug_task_fn, "Debug", 8192, NULL, 1, NULL); // Requires lock
+
+  Serial.println("Initializing main task...");
+  xTaskCreate(main_task_fn, "Main", 8192, NULL, 0, NULL); // Requires lock
 
   Serial.println("Initialized.");
 }
