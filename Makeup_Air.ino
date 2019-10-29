@@ -15,16 +15,18 @@
 Simulator sim;
 #endif
 
-#define LOOP_TICKS (100 / portTICK_PERIOD_MS) // .1 second
-TickType_t last_loop_time;
+TickType_t first_tick;
+
+#define LOOP_TICKS (25 / portTICK_PERIOD_MS) // .1 second
 
 #define LOCK_TICKS (1000 / portTICK_PERIOD_MS) // 1 second
 SemaphoreHandle_t lock = NULL;
 
-TickType_t last_debug_time;
 #define DEBUG_TICKS (100 / portTICK_PERIOD_MS) // .1 second
-#define MAX_DEBUG_LEN 255
+#define MAX_DEBUG_LEN 256
 char debug_buf[MAX_DEBUG_LEN];
+
+#define OTA_TICKS (1000 / portTICK_PERIOD_MS) // 1 second
 
 #define UDP_PORT 1982
 #define MAX_UDP_DATA 128
@@ -71,40 +73,28 @@ double sdp_temp = 0;
 double pid_out = PID_MIN;
 PID fan_pid(PID_KP, PID_KI, PID_KD, &pid_out, PID_SETPOINT, PID_MIN, PID_MAX, PID_ERR_MIN, PID_ERR_MAX);
 
-void ota_only_loop() {
-  for (;;) {
-    ota_loop(); // Do the OTA loop for potential recovery
-    delay(1000);
-  }
-}
-
 void setup() {
   Serial.begin(500000);
   while (!Serial); // Wait for Serial port to connect
+
+  Serial.println("Initializing task timer...");
+  first_tick = xTaskGetTickCount();
 
   Serial.println("Initializing WiFi...");
   WiFi.disconnect();
   WiFi.onEvent(wifi_event_handler);
   WiFi.begin(WIFI_SSID, WPA2_PSK);
 
-  Serial.println("Initializing OTA..."); // Do this early to give some chance of recovery
-  ota_setup();
+  Serial.println("Initializing OTA task..."); // Do this early to give some chance of recovery
+  xTaskCreate(ota_task_fn, "OtaTask", 10000, NULL, 2, NULL);
 
   Serial.println("Initializing I2C...");
   Wire.begin(-1, -1, 400000L); // Default pins, 400kHz
 
   Serial.println("Initializing SDP...");
-  if (!sdp810.begin_pdiff(true)) {
-    Serial.println("Failed to send begin averaged differential pressure reading command");
-    ota_only_loop();
-  }
-
-  Serial.println("Initializing UDP...");
-  if (udp.listen(UDP_PORT)) {
-    udp.onPacket(udp_ui);
-    Serial.println("UDP listening");
-  } else {
-    Serial.println("UDP failed");
+  while (!sdp810.begin_pdiff(true)) { // Do relatively early so it can warm up
+    Serial.println("Failed to begin averaged differential pressure reading");
+    delay(10000);
   }
 
   Serial.println("Initializing pins...");
@@ -116,18 +106,25 @@ void setup() {
   Serial.println("Initializing fan ADC...");
   fan_adc_setup(FAN_IN);
 
-  Serial.println("Initializing task timer...");
-  last_loop_time = xTaskGetTickCount();
-
   Serial.println("Initializing mutex...");
   lock = xSemaphoreCreateMutex();
-
-  Serial.println("Initializing debug format task...");
   if (lock == NULL) {
     Serial.println("Failed to create mutex");
-    ota_only_loop();
+    for (;;) {
+      delay(10000);
+    }
   }
-  xTaskCreate(debug_task_fn, "DebugTask", 10000, NULL, 1, NULL);
+
+  Serial.println("Initializing UDP...");
+  if (udp.listen(UDP_PORT)) {
+    udp.onPacket(udp_ui); // Requires lock
+    Serial.println("UDP listening");
+  } else {
+    Serial.println("UDP failed");
+  }
+
+  Serial.println("Initializing debug format task...");
+  xTaskCreate(debug_task_fn, "DebugTask", 10000, NULL, 1, NULL); // Requires lock
 
   Serial.println("Initialized.");
 }
@@ -240,8 +237,17 @@ void set_fan() {
   }
 }
 
-void debug_task_fn(void *parameters) {
-  last_debug_time = xTaskGetTickCount();
+void ota_task_fn(void* parameters) {
+  TickType_t last_ota_time = first_tick;
+  ota_setup();
+  for (;;) {
+    ota_loop();
+    vTaskDelayUntil(&last_ota_time, OTA_TICKS);
+  }
+}
+
+void debug_task_fn(void* parameters) {
+  TickType_t last_debug_time = first_tick;
   for (;;) {
     Serial.print(WiFi.localIP());
     Serial.print(": ");
@@ -262,7 +268,11 @@ void debug_task_fn(void *parameters) {
   }
 }
 
+// TODO: Move our main to a separate task and make loop idle?
+TickType_t last_loop_time = first_tick;
 void loop() {
+  TickType_t last_loop_time = first_tick;
+  vTaskDelayUntil(&last_loop_time, LOOP_TICKS); // Start with a delay to give SDP warmup time
   if (xSemaphoreTake(lock, LOCK_TICKS)) {
 #ifdef SIMULATABLE
     if (sim.is_active()) {
@@ -278,9 +288,6 @@ void loop() {
   } else {
     Serial.println("Loop failed to get lock!?");
   }
-
-  ota_loop();
-  vTaskDelayUntil(&last_loop_time, LOOP_TICKS);
 }
 
 void wifi_event_handler(system_event_id_t event) {
